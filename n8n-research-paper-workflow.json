@@ -1,0 +1,328 @@
+{
+  "name": "LLM Arena - Research Paper Pipeline",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "research-paper",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-trigger",
+      "name": "📥 Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [220, 300],
+      "webhookId": "research-paper-trigger"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract input from webhook body\nconst { topic, depth, pexelsKey, analyzerProvider, analyzerModel, analyzerKey, writerProvider, writerModel, writerKey, combinerProvider, combinerModel, combinerKey } = $input.first().json.body;\n\nconst SECTION_COUNTS = { brief: 4, standard: 7, deep: 11 };\nconst numSections = SECTION_COUNTS[depth] || 7;\n\nreturn [{\n  json: {\n    topic,\n    depth,\n    numSections,\n    pexelsKey: pexelsKey || '',\n    analyzer: { provider: analyzerProvider, model: analyzerModel, apiKey: analyzerKey },\n    writer: { provider: writerProvider, model: writerModel, apiKey: writerKey },\n    combiner: { provider: combinerProvider, model: combinerModel, apiKey: combinerKey }\n  }\n}];"
+      },
+      "id": "parse-input",
+      "name": "⚙️ Parse Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [440, 300]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.analyzer.provider === 'openai' ? 'https://api.openai.com/v1/chat/completions' : $json.analyzer.provider === 'anthropic' ? 'https://api.anthropic.com/v1/messages' : $json.analyzer.provider === 'gemini' ? 'https://generativelanguage.googleapis.com/v1beta/models/' + $json.analyzer.model + ':generateContent?key=' + $json.analyzer.apiKey : $json.analyzer.provider === 'deepseek' ? 'https://api.deepseek.com/v1/chat/completions' : $json.analyzer.provider === 'groq' ? 'https://api.groq.com/openai/v1/chat/completions' : 'https://api.openai.com/v1/chat/completions' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: $json.analyzer.model, messages: [{ role: 'user', content: 'You are a research paper architect. Given a topic, output a JSON plan for a research paper.\\n\\nTopic: \"' + $json.topic + '\"\\nNumber of sections: ' + $json.numSections + '\\n\\nRespond ONLY with valid JSON (no markdown, no explanation):\\n{\\n  \"title\": \"Full paper title\",\\n  \"abstract\": \"150-word abstract\",\\n  \"sections\": [\\n    {\\n      \"title\": \"Section title\",\\n      \"imageQuery\": \"2-3 word pexels search query for a relevant photo\",\\n      \"keyPoints\": \"2-3 sentence description of what this section should cover\"\\n    }\\n  ]\\n}' }], max_tokens: 4096, temperature: 0.7 }) }}",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "analyzer-ai",
+      "name": "🧠 NODE 1 — Analyzer AI",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [700, 300],
+      "notes": "Breaks the research topic into structured sections with title, image query, and key points for each section."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse the Analyzer AI response to extract the paper plan\nconst input = $input.first().json;\nconst prevData = $('⚙️ Parse Input').first().json;\n\nlet rawContent = '';\n\n// Handle OpenAI-compatible format\nif (input.choices && input.choices[0]) {\n  rawContent = input.choices[0].message.content;\n}\n// Handle Anthropic format\nelse if (input.content && input.content[0]) {\n  rawContent = input.content[0].text;\n}\n// Handle Gemini format\nelse if (input.candidates && input.candidates[0]) {\n  rawContent = input.candidates[0].content.parts[0].text;\n}\n\n// Extract JSON from the response\nlet plan;\ntry {\n  const jsonMatch = rawContent.match(/\\{[\\s\\S]*\\}/);\n  plan = JSON.parse(jsonMatch ? jsonMatch[0] : rawContent);\n} catch (e) {\n  // Fallback plan\n  const titles = ['Introduction', 'Background', 'Methodology', 'Results', 'Analysis', 'Discussion', 'Conclusion'];\n  plan = {\n    title: `Research Paper: ${prevData.topic}`,\n    abstract: `This paper explores ${prevData.topic} in depth.`,\n    sections: titles.slice(0, prevData.numSections).map(t => ({\n      title: t,\n      imageQuery: `${prevData.topic} ${t}`,\n      keyPoints: `Detailed exploration of ${t} related to ${prevData.topic}.`\n    }))\n  };\n}\n\n// Output each section as a separate item for the loop\nconst items = plan.sections.map((section, index) => ({\n  json: {\n    ...prevData,\n    paperTitle: plan.title,\n    paperAbstract: plan.abstract,\n    allSections: plan.sections,\n    currentSection: section,\n    sectionIndex: index,\n    totalSections: plan.sections.length\n  }\n}));\n\nreturn items;"
+      },
+      "id": "parse-plan",
+      "name": "📋 Parse Plan",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [940, 300]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.writer.provider === 'openai' ? 'https://api.openai.com/v1/chat/completions' : $json.writer.provider === 'anthropic' ? 'https://api.anthropic.com/v1/messages' : $json.writer.provider === 'gemini' ? 'https://generativelanguage.googleapis.com/v1beta/models/' + $json.writer.model + ':generateContent?key=' + $json.writer.apiKey : $json.writer.provider === 'deepseek' ? 'https://api.deepseek.com/v1/chat/completions' : $json.writer.provider === 'groq' ? 'https://api.groq.com/openai/v1/chat/completions' : 'https://api.openai.com/v1/chat/completions' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: $json.writer.model, messages: [{ role: 'system', content: 'You are an expert academic writer writing a research paper on: \"' + $json.topic + '\". Title: \"' + $json.paperTitle + '\".' }, { role: 'user', content: 'Write the \"' + $json.currentSection.title + '\" section of an academic research paper about \"' + $json.topic + '\".\\n\\nKey points to cover: ' + $json.currentSection.keyPoints + '\\nLength: approximately ' + ($json.depth === 'brief' ? 220 : $json.depth === 'deep' ? 600 : 380) + ' words\\nStyle: formal academic, paragraph form, no bullet points\\nDo NOT include the section heading — only the body text.' }], max_tokens: 4096, temperature: 0.7 }) }}",
+        "options": {
+          "timeout": 120000,
+          "batching": {
+            "batch": {
+              "batchSize": 2,
+              "batchInterval": 1000
+            }
+          }
+        }
+      },
+      "id": "writer-ai",
+      "name": "✍️ NODE 2 — Writer AI",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1200, 200],
+      "notes": "Writes detailed academic content for each section. Processes each section from the plan sequentially."
+    },
+    {
+      "parameters": {
+        "url": "=https://api.pexels.com/v1/search?query={{ encodeURIComponent($json.currentSection.imageQuery) }}&per_page=1&orientation=landscape",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ $json.pexelsKey }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "pexels-images",
+      "name": "🎨 NODE 3 — Pexels Images",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1200, 460],
+      "notes": "Fetches relevant landscape photos from Pexels for each section based on the image query from the Analyzer.",
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Merge writer content and pexels images per section\nconst writerItems = $('✍️ NODE 2 — Writer AI').all();\nconst imageItems = $('🎨 NODE 3 — Pexels Images').all();\nconst planItems = $('📋 Parse Plan').all();\n\nconst sections = [];\nlet paperTitle = '';\nlet paperAbstract = '';\nlet topic = '';\nlet combinerConfig = {};\n\nfor (let i = 0; i < planItems.length; i++) {\n  const plan = planItems[i].json;\n  paperTitle = plan.paperTitle;\n  paperAbstract = plan.paperAbstract;\n  topic = plan.topic;\n  combinerConfig = plan.combiner;\n\n  // Extract writer content\n  let sectionContent = '';\n  const writerResp = writerItems[i]?.json;\n  if (writerResp?.choices?.[0]) {\n    sectionContent = writerResp.choices[0].message.content;\n  } else if (writerResp?.content?.[0]) {\n    sectionContent = writerResp.content[0].text;\n  } else if (writerResp?.candidates?.[0]) {\n    sectionContent = writerResp.candidates[0].content.parts[0].text;\n  }\n\n  // Extract image URL\n  let imageUrl = null;\n  const imageResp = imageItems[i]?.json;\n  if (imageResp?.photos?.[0]?.src?.large) {\n    imageUrl = imageResp.photos[0].src.large;\n  }\n\n  sections.push({\n    title: plan.currentSection.title,\n    content: sectionContent,\n    imageUrl: imageUrl\n  });\n}\n\nreturn [{\n  json: {\n    paperTitle,\n    paperAbstract,\n    topic,\n    sections,\n    combiner: combinerConfig\n  }\n}];"
+      },
+      "id": "merge-results",
+      "name": "🔀 Merge Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1460, 300]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.combiner.provider === 'openai' ? 'https://api.openai.com/v1/chat/completions' : $json.combiner.provider === 'anthropic' ? 'https://api.anthropic.com/v1/messages' : $json.combiner.provider === 'gemini' ? 'https://generativelanguage.googleapis.com/v1beta/models/' + $json.combiner.model + ':generateContent?key=' + $json.combiner.apiKey : $json.combiner.provider === 'deepseek' ? 'https://api.deepseek.com/v1/chat/completions' : $json.combiner.provider === 'groq' ? 'https://api.groq.com/openai/v1/chat/completions' : 'https://api.openai.com/v1/chat/completions' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: $json.combiner.model, messages: [{ role: 'user', content: 'You are a senior academic editor. A research paper on \"' + $json.topic + '\" has been drafted.\\nTitle: \"' + $json.paperTitle + '\"\\nSections written: ' + $json.sections.map((s, i) => '[' + (i+1) + '] ' + s.title).join(', ') + '\\n\\nWrite a single final polished paragraph (max 120 words) that serves as the editor\\'s note — summarizing the paper\\'s contribution and significance. Keep it formal and impactful.' }], max_tokens: 2048, temperature: 0.7 }) }}",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "combiner-ai",
+      "name": "📝 NODE 4 — Combiner AI",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1720, 300],
+      "notes": "Polishes the paper with an editor's note summarizing the paper's contribution and significance."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Assemble the final research paper output\nconst mergedData = $('🔀 Merge Results').first().json;\nconst combinerResp = $input.first().json;\n\nlet editorNote = '';\nif (combinerResp?.choices?.[0]) {\n  editorNote = combinerResp.choices[0].message.content;\n} else if (combinerResp?.content?.[0]) {\n  editorNote = combinerResp.content[0].text;\n} else if (combinerResp?.candidates?.[0]) {\n  editorNote = combinerResp.candidates[0].content.parts[0].text;\n}\n\n// Build full paper text for easy consumption\nlet fullPaper = `# ${mergedData.paperTitle}\\n\\n`;\nfullPaper += `## Abstract\\n${mergedData.paperAbstract}\\n\\n`;\n\nfor (let i = 0; i < mergedData.sections.length; i++) {\n  const s = mergedData.sections[i];\n  fullPaper += `## ${i + 1}. ${s.title}\\n`;\n  if (s.imageUrl) fullPaper += `![${s.title}](${s.imageUrl})\\n`;\n  fullPaper += `${s.content}\\n\\n`;\n}\n\nfullPaper += `## Editor's Note\\n${editorNote}\\n`;\n\nreturn [{\n  json: {\n    title: mergedData.paperTitle,\n    abstract: mergedData.paperAbstract,\n    sections: mergedData.sections,\n    editorNote: editorNote,\n    fullPaperMarkdown: fullPaper,\n    metadata: {\n      generatedAt: new Date().toISOString(),\n      totalSections: mergedData.sections.length,\n      topic: mergedData.topic,\n      pipeline: 'LLM Arena Research Paper Pipeline'\n    }\n  }\n}];"
+      },
+      "id": "assemble-paper",
+      "name": "📄 Assemble Final Paper",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1980, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "responseCode": 200,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        }
+      },
+      "id": "respond-webhook",
+      "name": "✅ Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [2240, 300]
+    }
+  ],
+  "connections": {
+    "📥 Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "⚙️ Parse Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "⚙️ Parse Input": {
+      "main": [
+        [
+          {
+            "node": "🧠 NODE 1 — Analyzer AI",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "🧠 NODE 1 — Analyzer AI": {
+      "main": [
+        [
+          {
+            "node": "📋 Parse Plan",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "📋 Parse Plan": {
+      "main": [
+        [
+          {
+            "node": "✍️ NODE 2 — Writer AI",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "🎨 NODE 3 — Pexels Images",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "✍️ NODE 2 — Writer AI": {
+      "main": [
+        [
+          {
+            "node": "🔀 Merge Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "🎨 NODE 3 — Pexels Images": {
+      "main": [
+        [
+          {
+            "node": "🔀 Merge Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "🔀 Merge Results": {
+      "main": [
+        [
+          {
+            "node": "📝 NODE 4 — Combiner AI",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "📝 NODE 4 — Combiner AI": {
+      "main": [
+        [
+          {
+            "node": "📄 Assemble Final Paper",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "📄 Assemble Final Paper": {
+      "main": [
+        [
+          {
+            "node": "✅ Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": ""
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "name": "AI",
+      "id": "ai-tag"
+    },
+    {
+      "name": "Research",
+      "id": "research-tag"
+    },
+    {
+      "name": "LLM Arena",
+      "id": "llm-arena-tag"
+    }
+  ],
+  "triggerCount": 1,
+  "updatedAt": "2026-03-09T12:12:57.000Z",
+  "versionId": "1"
+}
